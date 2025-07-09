@@ -1,0 +1,488 @@
+# Load necessary libraries
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(shiny)
+library(shinydashboard)
+library(shinydashboardPlus)
+library(httr2)
+library(plotly)
+
+#First step is of course downloading data and tidying it up. 
+
+# Load the dataset of GDP per capita (constant 2015 US$)  and save it in the GDP  tibble 
+req <-request("https://api.worldbank.org/v2/country/ARM;GEO;POL;SVK;ROU;ITA;SWE;AUT;BEL;FRA/indicator/NY.GDP.PCAP.KD?per_page=1000&format=json&date=2010:2021")
+
+req_dry_run(req) 
+response <- req_perform(req)
+resp_status(response)
+resp_status_desc(response) 
+result <- resp_body_json(response) # save it as a json type 
+result <- result[[2]] # extract the list we need 
+# extract country, year and value  from lists and save it into vector 
+Country <- unlist(lapply(result, function(x) x[["country"]][["value"]])) # use the function lapply to make the function work on all nested lists and then unlist 
+Year <- unlist(lapply(result, '[[', "date"))
+GDP_per_capita <- unlist(lapply(result, '[[', "value"))
+
+# make a tibble out of saved vecrots 
+GDP<-tibble(Country = Country, Year = Year, GDP_per_capita)
+GDP$Year<-as.numeric(GDP$Year) # make year numeric 
+typeof(GDP$Year) # check type
+str(GDP)
+
+# repeat the same thing for Gini index .  Load the dataset of Gini index and create tibble with it with year and country 
+req1 <-request("https://api.worldbank.org/v2/country/ARM;GEO;POL;SVK;ROU;ITA;SWE;AUT;BEL;FRA/indicator/SI.POV.GINI?per_page=1000&format=json&date=2010:2021")
+req1
+req_dry_run(req1)
+response1 <- req_perform(req1)
+response1
+resp_status(response1)
+resp_status_desc(response1)
+result1 <- resp_body_json(response1)
+result1 <- result1[[2]]
+
+Country <- unlist(lapply(result1, function(x) x[["country"]][["value"]]))
+Year <- unlist(lapply(result1, '[[', "date"))
+GINI_index <- unlist(lapply(result1, '[[', "value"))
+anyNA(GINI_index)
+GINI<-tibble(Country = Country, Year = Year, GINI_index)
+GINI$Year<-as.numeric(GINI$Year)
+typeof(GINI$Year)
+str(GINI)
+
+# repeat the same thing for  life expectancy . Load the dataset of Life expectancy at birth, total (years) and create tibble with it with year and country
+
+req2 <-request("https://api.worldbank.org/v2/country/ARM;GEO;POL;SVK;ROU;ITA;SWE;AUT;BEL;FRA/indicator/SP.DYN.LE00.IN?per_page=1000&format=json&date=2010:2021")
+req2
+req_dry_run(req2)
+response2 <- req_perform(req2)
+response2
+resp_status(response2)
+resp_status_desc(response2)
+result2 <- resp_body_json(response2)
+result2 <- result2[[2]]
+result2
+
+Country <- unlist(lapply(result2, function(x) x[["country"]][["value"]])) 
+Year <- unlist(lapply(result2, '[[', "date"))
+life_expectancy<- unlist(lapply(result2, '[[', "value"))
+
+Life<-tibble(Country = Country, Year = Year,life_expectancy)
+Life$Year<-as.numeric(Life$Year)
+typeof(Life$Year)
+str(Life)
+
+
+#  repeat the same thing for unemployment. load Unemployment, total (% of total labor force)  and create tibble with it with year and country
+
+req4 <- request("https://api.worldbank.org/v2/country/ARM;GEO;POL;SVK;ROU;ITA;SWE;AUT;BEL;FRA/indicator/SL.UEM.TOTL.ZS?per_page=1000&format=json&date=2010:2021")
+response4 <- req_perform(req4)
+result4 <- resp_body_json(response4)[[2]]
+Country <- unlist(lapply(result4, function(x) x[["country"]][["value"]]))
+Year <- unlist(lapply(result4, '[[', "date"))
+Value <- unlist(lapply(result4, '[[', "value"))
+Unemployment<- tibble(Country, Year, Total_Unemployment = Value)
+Unemployment$Year <- as.numeric(as.character(Unemployment$Year))
+
+
+
+#After downloading all the indicators, I merged the columns together using the 'merge' 
+#function, summing them up in the desired order of preference within the same dataset.
+
+# Merge data frames two at a time
+merge1 <- merge(Life, GINI, by = c("Country", "Year"))
+merge2 <- merge(merge1, GDP, by = c("Country", "Year"))
+Macro <- merge(merge2, Unemployment, by = c("Country", "Year"))
+
+# Check the structure of the final merged data frame
+str(Macro)
+
+# Differentiate countries into Easter and Western Europe region with case when and add it to the dataset Macro with mutate 
+Macro<-Macro %>%
+  group_by(Country)%>%
+  mutate(Status = case_when(
+    Country %in% c("Armenia","Georgia", "Poland", "Slovak Republic","Romania") ~ "Eastern Europe",
+    Country %in% c("Italy", "Sweden", "Austria", "Belgium", "France") ~ "Western Europe"))
+
+# at this point my dataset is ready and is called "Macro"
+
+# i am crating each chart in the server so firstly we should create  dashboard page with and call it UI 
+
+
+#  crating UI for each chart separate tab panel and differentiate chart types with tabs  each chart have its own info box below  and each chart react to the controls in the sidebar menu 
+# in sidebar menu there are check boxes for countries, slider for years and selective tab for regions 
+ui <- dashboardPage(
+  dashboardHeader(title = "Europe Overview Dashboard"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Trend Analysis", tabName = "trend_analysis"),
+      menuItem("Comparative Analysis", tabName = "bar_chart_analysis"),
+      menuItem("Correlation Analysis", tabName = "correlation_analysis"),
+      selectInput("region_select", "Select Region", choices = c("All", "Eastern Europe", "Western Europe")),
+      checkboxGroupInput("country_select", "Select Countries", choices = unique(Macro$Country)),
+      sliderInput("year_range", "Select Year Range", min = min(Macro$Year), max = max(Macro$Year), value = c(min(Macro$Year), max(Macro$Year)))
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "trend_analysis",
+              tabsetPanel(
+                tabPanel("GDP per Capita",
+                         fluidRow(
+                           box(title = "GDP per Capita Trend Over Selected Years", status = "primary", solidHeader = TRUE, width = 12,
+                               plotlyOutput("gdp_trend"))
+                         ),
+                         fluidRow(
+                           infoBox(
+                             div(
+                               style = "max-height: 150px; overflow-y: auto; font-size: 15px;",
+                               "GDP per Capita is an average economic output per individual, which helps in comparing the economic performance of different countries relative to their population sizes.
+                               This chart provides a view of how the GDP per Capita has evolved for a selection of countries over a decade.
+                               It can be used to infer economic growth trends, relative economic performance, and the impact of various economic policies or global events on these countries. 
+                               You can choose countries by  region or separate and year range from the tabs. Position your cursor over the line to reveal the corresponding year and value of GDP per Capita."
+                             ),
+                             width = 12,
+                             icon = icon("info-circle"),
+                             title = "Info"
+                           )
+                         )
+                ),
+                tabPanel("Gini Index",
+                         fluidRow(
+                           box(title = "Gini Index Trend Over Selected Years", status = "primary", solidHeader = TRUE, width = 12,
+                               plotlyOutput("gini_trend"))
+                         ),
+                         fluidRow(
+                           infoBox(
+                             div(
+                               style = "max-height: 150px; overflow-y: auto; font-size: 15px;",
+                               "The Gini Index measures the income distribution within a population, indicating the level of economic inequality. A Gini Index of 0 represents perfect equality, while a value of 100 indicates perfect inequality. 
+                               Monitoring changes in the Gini Index over time helps to understand how economic policies and global events impact income inequality across different countries. You can choose countries, regions and year range from the tabs.
+                               Position your cursor over the line to reveal the corresponding year and value of the Gini Index. 
+                               In the chart as you can see , there is a significant drop for Armenia, which is a positive aspect.
+                               This was caused by the Velvet Revolution, which led to the resignation of Prime Minister Serzh Sargsyan and the rise of Nikol Pashinyan's government. The new administration  implemented economic reforms focused on inclusive growth,  and improving tax collection, which helped reduce income inequality. "
+                             ),
+                             width = 12,
+                             icon = icon("info-circle"),
+                             title = "Info"
+                           )
+                         )
+                ),
+                tabPanel("Unemployment",
+                         fluidRow(
+                           box(title = " Total Unemployment (% of total labor force) Trend Over Selected Years ", status = "primary", solidHeader = TRUE, width = 12,
+                               plotlyOutput("unemployment_trend"))
+                         ),
+                         fluidRow(
+                           infoBox(
+                             div(
+                               style = "max-height: 150px; overflow-y: auto; font-size: 15px;",
+                               "The unemployment rate is a key economic indicator that measures the percentage of the labor force that is unemployed and actively seeking employment.
+                               Analyzing trends in unemployment rates helps in understanding the economic health and labor market conditions of different countries.
+                               This chart provides a  view of how the unemployment rate has changed over time for various countries.
+                               You can choose countries by  region and year range from the tabs. 
+                               Position your cursor over the line to reveal the corresponding year and unemployment rate."
+                             ),
+                             width = 12,
+                             icon = icon("info-circle"),
+                             title = "Info"
+                           )
+                         )
+                ),
+                tabPanel("Life Expectancy",
+                         fluidRow(
+                           box(title = "Life Expectancy Trend Over Selected Years", status = "primary", solidHeader = TRUE, width = 12,
+                               plotlyOutput("life_expectancy_trend"))
+                         ),
+                         fluidRow(
+                           infoBox(
+                             div(
+                               style = "max-height: 150px; overflow-y: auto; font-size: 15px;",
+                               "Life expectancy is an important indicator of the overall health and quality of life in different countries.
+                               It reflects the average number of years a person can expect to live based on current mortality rates.
+                               Monitoring changes in life expectancy can reveal the impact of healthcare policies, socioeconomic conditions, and global events on population health. 
+                               This chart provides a  view of life expectancy trends across different countries over selected years.
+                               Position your cursor over the line to reveal the corresponding year and value of life expectancy.
+                               in this chart as you can see there ar drop for all countries in 2019 , this is coused by  COVID 19 pandemic,And as we can see western countries adapt to it faster then easter countries."
+                             ),
+                             width = 12,
+                             icon = icon("info-circle"),
+                             title = "Info"
+                           )
+                         )
+                )
+              )
+      ),
+      tabItem(tabName = "bar_chart_analysis",
+              tabsetPanel(
+                tabPanel("GDP per Capita Change",
+                         fluidRow(
+                           box(title = "GDP per Capita % Change between selecting years  ", status = "primary", solidHeader = TRUE, width = 12,
+                               sliderInput("gdp_slider", "Select Number of Countries", min = 1, max = 10, value = 5, width = "25%"), # create slider to show how many country you want 
+                               plotlyOutput("gdp_change"))
+                         ),
+                         fluidRow(
+                            infoBoxOutput("gdp_info_bar", width = 12)
+                         )
+                ),
+                tabPanel("Gini Index Change",
+                         fluidRow(
+                           box(title = "Gini Index % Change between selecting years ", status = "primary", solidHeader = TRUE, width = 12,
+                               sliderInput("gini_slider", "Select Number of Countries", min = 1, max = 10, value = 5, width = "25%"),# create slider to show how many country you want 
+                               plotlyOutput("gini_change"))
+                         ),
+                         fluidRow(
+                            infoBoxOutput("gini_info_bar", width = 12)
+                         )
+                ),
+                tabPanel("Unemployment Change",
+                         fluidRow(
+                           box(title = "Total Unemployment % Change between selecting years", status = "primary", solidHeader = TRUE, width = 12,
+                               sliderInput("unemployment_slider", "Select Number of Countries", min = 1, max = 10, value = 5, width = "25%"),# create slider to show how many country you want 
+                               plotlyOutput("unemployment_change"))
+                         ),
+                         fluidRow(
+                           infoBoxOutput("unemployment_info_bar",width = 12)
+                         )
+                ),
+                tabPanel("Life Expectancy Change",
+                         fluidRow(
+                           box(title = "Life Expectancy % Change between selecting years", status = "primary", solidHeader = TRUE, width = 12,
+                               sliderInput("life_expectancy_slider", "Select Number of Countries", min = 1, max = 10, value = 5, width = "25%"),# create slider to show how many country you want 
+                               plotlyOutput("life_expectancy_change"))
+                         ),
+                         fluidRow(
+                          infoBoxOutput("life_expectancy_info_bar", width = 12)
+                         )
+                )
+              )
+      ),
+      tabItem(tabName = "correlation_analysis",
+              fluidRow(
+                box(title = "Correlation between GDP per Capita and Life Expectancy", status = "primary", solidHeader = TRUE, width = 12,# create slider to show how many country you want 
+                    plotlyOutput("correlation_plot"))
+              ),
+              fluidRow(
+                infoBox("Correlation Info",div(
+                  style = "max-height: 150px; overflow-y: auto; font-size: 14px;",
+                  "This chart shows the correlation between GDP per capita and life expectancy among selected countries.
+            Each dot represents data for a specific country, with the x-axis representing GDP per capita and the y-axis representing life expectancy. 
+            Different colors indicate different countries. The chart demonstrates a general positive correlation between GDP per capita and life expectancy, indicating that countries with higher GDP per capita tend to have higher life expectancy. 
+            The relationship between GDP per capita and life expectancy differs between Eastern and Western European countries. 
+            Western European countries (e.g., Austria, Belgium, France, Italy, Sweden) typically have higher GDP per capita and higher life expectancy, clustered towards the upper right of the chart. Eastern European countries (e.g., Armenia, Georgia, Poland, Romania, Slovak Republic) generally have lower GDP per capita and lower life expectancy, clustered towards the lower left of the chart.\
+            This visual distinction illustrates the economic and health disparities between Eastern and Western European countries."), width = 12)
+              )
+      )
+    )
+  )
+)
+ 
+#  Creating Server where i create each plot and reactive functions 
+server <- function(input, output, session) {
+  
+  # Update country selection based on region selection
+  observeEvent(input$region_select, {
+    if (input$region_select == "All") {
+      updateCheckboxGroupInput(session, "country_select", choices = unique(Macro$Country), selected = unique(Macro$Country))
+    } else if (input$region_select == "Eastern Europe") {
+      updateCheckboxGroupInput(session, "country_select", choices = unique(Macro$Country[Macro$Status == "Eastern Europe"]), selected = unique(Macro$Country[Macro$Status == "Eastern Europe"]))
+    } else if (input$region_select == "Western Europe") {
+      updateCheckboxGroupInput(session, "country_select", choices = unique(Macro$Country[Macro$Status == "Western Europe"]), selected = unique(Macro$Country[Macro$Status == "Western Europe"]))
+    }
+  })
+  
+  # Reactive function to filter data based on inputs years , region and country 
+  filtered_data <- reactive({
+    data <- Macro %>%
+      filter(Year >= input$year_range[1] & Year <= input$year_range[2])
+    
+    if (input$region_select != "All") {
+      data <- data %>% filter(Status == input$region_select)
+    }
+    
+    if (!is.null(input$country_select)) {
+      data <- data %>% filter(Country %in% input$country_select)
+    }
+    
+  })
+  
+  # Plot for GDP trend analysis multi-line chart with points for better visualization  differentiate country based on colors 
+  output$gdp_trend <- renderPlotly({
+    data <- filtered_data()
+    plot <- ggplot(data, aes(x = Year, y = GDP_per_capita, color = Country)) +
+      geom_line() +
+      geom_point() +
+      labs( x = "Year", y = "GDP per Capita ($)") +
+      theme_minimal()
+    ggplotly(plot)
+  })
+  
+  # Plot for GINI trend analysis multi-line chart with points for better visualization   differentiate country based on colors
+  output$gini_trend <- renderPlotly({
+    data <- filtered_data()
+    plot <- ggplot(data, aes(x = Year, y = GINI_index, color = Country)) +
+      geom_line() +
+      geom_point() +
+      labs( x = "Year", y = "Gini Index") +
+      theme_minimal()
+    ggplotly(plot)
+  })
+  
+  # Plot for Unemployment trend analysis multi-line chart with points for better visualization  differentiate country based on colors
+  output$unemployment_trend <- renderPlotly({
+    data <- filtered_data()
+    plot <- ggplot(data, aes(x = Year, y = Total_Unemployment, color = Country)) +
+      geom_line() +
+      geom_point() +
+      labs( x = "Year", y = "Unemployment, total (% of total labor force)") +
+      theme_minimal()
+    ggplotly(plot)
+  })
+  
+  # Plot for Life Expectancy trend analysis multi-line chart with points for better visualization  differentiate country based on colors
+  output$life_expectancy_trend <- renderPlotly({
+    data <- filtered_data()
+    plot <- ggplot(data, aes(x = Year, y = life_expectancy, color = Country)) +
+      geom_line() +
+      geom_point() +
+      labs( x = "Year", y = "Life expectancy at birth, total (years) ") +
+      theme_minimal()
+    ggplotly(plot)
+  })
+  
+  #  this is the Reactive function with calculate changes percentage for GDP_per_capita but it can change by input countries or years for bar charts
+  filtered_data_bar <- reactive({
+    data <- filtered_data() %>%
+      group_by(Country) %>%
+      summarize(Change = (last(GDP_per_capita) - first(GDP_per_capita)) / first(GDP_per_capita) * 100) %>%
+      arrange(desc(Change))
+  })
+  
+  #  this is the Reactive function with calculate changes percentage for GINI_index but it can change by input countries or years for bar charts 
+  filtered_data_bar_GINI <- reactive({
+    data <- filtered_data() %>%
+      group_by(Country) %>%
+      summarize(Change = (last(GINI_index) - first(GINI_index)) / first(GINI_index) * 100) %>%
+      arrange(desc(Change))
+  })
+  #  this is the Reactive function with calculate changes percentage for Total_Unemployment but it can change by input countries or years for bar charts 
+  
+  filtered_data_bar_un <- reactive({
+    data <- filtered_data() %>%
+      group_by(Country) %>%
+      summarize(Change = (last(Total_Unemployment) - first(Total_Unemployment)) / first(Total_Unemployment) * 100) %>%
+      arrange(desc(Change))
+  })
+  
+
+  #  this is the Reactive function with calculate changes percentage for life_expectancy but it can change by input countries or years for bar charts  
+  filtered_data_bar_Life <- reactive({
+    data <- filtered_data() %>%
+      group_by(Country) %>%
+      summarize(Change = (last(life_expectancy) - first(life_expectancy)) / first(life_expectancy) * 100) %>%
+      arrange(desc(Change))
+  })
+  
+  # Bar chart for GDP Change which is reactive and sorted  also have input slider to pick how many countries you want to show 
+  output$gdp_change <- renderPlotly({
+    data <- filtered_data_bar() %>% head(input$gdp_slider)
+    plot <- ggplot(data, aes(x = reorder(Country, -Change), y = Change, fill = Country, text = paste("Country:", Country, "<br>Change:", round(Change, 2), "%"))) +
+      geom_bar(stat = "identity") +
+      labs( x = "Country", y = "Change (%)") +
+      theme_minimal() +
+      theme(axis.text.x = element_text( hjust = 1))
+    ggplotly(plot, tooltip = c("text"))
+  })
+  
+  # Bar chart for GINI Change which is reactive and sorted
+  output$gini_change <- renderPlotly({
+    data <- filtered_data_bar_GINI() %>% head(input$gini_slider)
+    plot <- ggplot(data, aes(x = reorder(Country, -Change), y = Change, fill = Country, text = paste("Country:", Country, "<br>Change:", round(Change, 2), "%"))) +
+      geom_bar(stat = "identity") +
+      labs( x = "Country", y = "Change (%)") +
+      theme_minimal() +
+      theme(axis.text.x = element_text( hjust = 1))
+    ggplotly(plot, tooltip = c("text"))
+  })
+  
+  # Bar chart for Unemployment Change which is reactive and sorted 
+  output$unemployment_change <- renderPlotly({
+    data <- filtered_data_bar_un() %>% head(input$unemployment_slider)
+    plot <- ggplot(data, aes(x = reorder(Country, -Change), y = Change, fill = Country, text = paste("Country:", Country, "<br>Change:", round(Change, 2), "%"))) +
+      geom_bar(stat = "identity") +
+      labs( x = "Country", y = "Change (%)") +
+      theme_minimal() +
+      theme(axis.text.x = element_text( hjust = 1))
+    ggplotly(plot, tooltip = c("text"))
+  })
+  
+  # Bar chart for Life Expectancy Change which is reactive and sorted 
+  output$life_expectancy_change <- renderPlotly({
+    data <- filtered_data_bar_Life() %>% head(input$life_expectancy_slider)
+    plot <- ggplot(data, aes(x = reorder(Country, -Change), y = Change, fill = Country, text = paste("Country:", Country, "<br>Change:", round(Change, 2), "%"))) +
+      geom_bar(stat = "identity") +
+      labs( x = "Country", y = "Change (%)") +
+      theme_minimal() +
+      theme(axis.text.x = element_text( hjust = 1))
+    ggplotly(plot, tooltip = c("text"))
+  })
+  
+  # InfoBox for GDP Change it changes based on input years to show in selecting years which country have  highest and lowest change 
+  output$gdp_info_bar <- renderInfoBox({
+    data <- filtered_data_bar()
+    highest_change <- data %>% slice(1)
+    lowest_change <- data %>% arrange(Change) %>% slice(1)
+    infoBox("GDP Change Info",div(
+      style = "max-height: 150px; overflow-y: auto; font-size: 15px;",
+      paste("In the selected years, ", highest_change$Country, " experienced an increase in GDP per capita by ", round(highest_change$Change, 2), "%. This increase is generally positive, as it suggests economic growth and a higher standard of living. 
+      On the other hand, ", lowest_change$Country, " saw a change in GDP per capita by ", round(lowest_change$Change, 2), "%. 
+       This  indicating potential economic challenges and a lower standard of living for its citizens.")), icon = icon("info-circle"))
+  })
+  
+  # InfoBox for GINI Change it changes based on input years to show in selecting years which country have  highest and lowest change 
+  output$gini_info_bar <- renderInfoBox({
+    data <- filtered_data_bar_GINI()
+    highest_change <- data %>% slice(1)
+    lowest_change <- data %>% arrange(Change) %>% slice(1)
+    infoBox("GINI Change Info", div(
+      style = "max-height: 150px; overflow-y: auto; font-size: 15px;",paste("In the selected years, ", highest_change$Country, "  experienced an increase in the Gini Index by ", round(highest_change$Change, 2), "% .
+    This increase indicates growing income inequality, which can have negative impacts such as increased social tension and reduced economic mobility.
+     On the other hand,", lowest_change$Country, " saw a change in the Gini Index by ", round(lowest_change$Change, 2), "%. 
+    This reduction signifies improved income equality, which is generally positive, leading to better social cohesion and more balanced economic development.")), icon = icon("info-circle"))
+  })
+  
+  # InfoBox for Unemployment Change it changes based on input years to show in selecting years which country have  highest and lowest change 
+  output$unemployment_info_bar <- renderInfoBox({
+    data <- filtered_data_bar_un()
+    highest_change <- data %>% slice(1)
+    lowest_change <- data %>% arrange(Change) %>% slice(1)
+    infoBox("Unemployment Change Info",div(
+      style = "max-height: 150px; overflow-y: auto; font-size: 15px;", paste("In the selected years, ", highest_change$Country, " experienced an increase in unemployment by ", round(highest_change$Change, 2), "%. This increase is negative, as higher unemployment rates often lead to economic strain and reduced quality of life. 
+    Conversely, ", lowest_change$Country, " saw a change in unemployment by ", round(lowest_change$Change, 2), "%. This reduction is positive, suggesting an improving job market and better economic opportunities for its workforce.")),
+      icon = icon("info-circle")
+)
+  })
+  
+  # InfoBox for Life Expectancy Change it changes based on input years to show in selecting years which country have  highest and lowest change  
+  output$life_expectancy_info_bar <- renderInfoBox({
+    data <- filtered_data_bar_Life()
+    highest_change <- data %>% slice(1)
+    lowest_change <- data %>% arrange(Change) %>% slice(1)
+    infoBox("Life Expectancy Change Info",div(
+      style = "max-height: 150px; overflow-y: auto; font-size: 15px;", paste("In the selected years, ", highest_change$Country, " experienced an increase in life expectancy by ", round(highest_change$Change, 2), "%. This increase  reflecting improvements in healthcare, living conditions, and overall well-being.
+    On the other hand, ", lowest_change$Country, " saw a change in life expectancy by ", round(lowest_change$Change, 2), "%. This decline is negative, indicating potential issues in healthcare, living conditions, and general health of the population.")),icon = icon("info-circle"))
+  })
+  
+  # Correlation plot which reacts to side bar many controls with years and countries picked 
+  output$correlation_plot <- renderPlotly({
+    data <- filtered_data()
+    plot <- ggplot(data, aes(x = GDP_per_capita, y = life_expectancy, color = Country, text = paste("Country:", Country, "<br>Year",Year, "<br>GDP per Capita:", round(GDP_per_capita, 2), "<br>Life Expectancy:", round(life_expectancy, 2)))) +
+      geom_point() +
+      labs( x = "GDP per Capita", y = "Life Expectancy") +
+      theme_minimal()
+    ggplotly(plot, tooltip = c("text"))
+  })
+
+}
+
+shinyApp(ui, server)
